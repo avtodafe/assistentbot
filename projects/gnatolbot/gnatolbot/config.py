@@ -19,6 +19,10 @@ class Settings:
     google_sheet_id: str | None
     google_service_account_json: str | None
     timezone: str
+    llm_enabled: bool
+    llm_base_url: str | None
+    llm_api_key: str | None
+    llm_model: str | None
 
 
     @classmethod
@@ -38,4 +42,8 @@ class Settings:
             google_sheet_id=os.getenv('GOOGLE_SHEET_ID') or None,
             google_service_account_json=os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON') or None,
             timezone=os.getenv('TIMEZONE', 'Europe/Moscow').strip() or 'Europe/Moscow',
+            llm_enabled=os.getenv('LLM_ENABLED', 'false').lower() == 'true',
+            llm_base_url=os.getenv('LLM_BASE_URL') or None,
+            llm_api_key=os.getenv('LLM_API_KEY') or None,
+            llm_model=os.getenv('LLM_MODEL') or None,
         )

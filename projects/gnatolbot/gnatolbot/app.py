@@ -16,6 +16,7 @@ from telegram.ext import (
 
 from .config import Settings
 from .dialogue import ConversationData, is_price_question, normalize_phone, summarize_complaint
+from .llm import FreeLLM
 from .models import Database
 from .storage import LeadPayload, LeadRepository, SheetsExporter
 
@@ -23,6 +24,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 COMPLAINT, PREFERRED_TIME, PHONE, NAME = range(4)
+CONSULTATION_PRICE_TEXT = 'Консультация стоит 2000 рублей.'
 CONTACT_KEYBOARD: Final = ReplyKeyboardMarkup(
     [[{'text': 'Поделиться контактом', 'request_contact': True}]],
     resize_keyboard=True,
@@ -30,14 +32,59 @@ CONTACT_KEYBOARD: Final = ReplyKeyboardMarkup(
 )
 
 
+def ensure_lead(context: ContextTypes.DEFAULT_TYPE) -> ConversationData:
+    lead = context.user_data.get('lead')
+    if not lead:
+        lead = ConversationData()
+        context.user_data['lead'] = lead
+    return lead
+
+
+async def llm_or_fallback_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, *, text: str) -> str | None:
+    llm: FreeLLM | None = context.application.bot_data.get('llm')
+    lead = ensure_lead(context)
+
+    if llm:
+        try:
+            result = await llm.respond(
+                user_text=text,
+                complaint=lead.complaint or '',
+                preferred_time=lead.preferred_time or '',
+                phone=lead.phone or '',
+                name=lead.client_name or '',
+            )
+            if result.complaint and not lead.complaint:
+                lead.complaint = result.complaint
+            if result.preferred_time and not lead.preferred_time:
+                lead.preferred_time = result.preferred_time
+            if result.name and not lead.client_name:
+                lead.client_name = result.name
+            if result.phone and not lead.phone:
+                normalized = normalize_phone(result.phone)
+                if normalized:
+                    lead.phone = normalized
+            if result.reply:
+                return result.reply
+        except Exception as exc:  # noqa: BLE001
+            logger.exception('LLM reply failed: %s', exc)
+
+    if is_price_question(text):
+        return (
+            f'{CONSULTATION_PRICE_TEXT}\n\n'
+            'Если хотите, я могу передать Вашу заявку администратору клиники. '
+            'Напишите, пожалуйста, номер телефона для связи.'
+        )
+    return None
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['lead'] = ConversationData()
     if update.message:
         await update.message.reply_text(
-        'Здравствуйте! Я ассистент Ирины. Помогу уточнить пару вопросов и передам администратору, '
-        'чтобы Вас записали на консультацию. Я не врач и не ставлю диагнозы в переписке.\n\n'
-        'Подскажите, пожалуйста, что именно Вас беспокоит?',
-        reply_markup=ReplyKeyboardRemove(),
+            'Здравствуйте! Я ассистент Ирины. Помогу уточнить пару вопросов и передам администратору, '
+            'чтобы Вас записали на консультацию. Я не врач и не ставлю диагнозы в переписке.\n\n'
+            'Подскажите, пожалуйста, что именно Вас беспокоит?',
+            reply_markup=ReplyKeyboardRemove(),
         )
     return COMPLAINT
 
@@ -47,20 +94,20 @@ async def start_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     assert update.message is not None
     text = (update.message.text or '').strip()
     context.user_data['lead'] = ConversationData()
+    lead = ensure_lead(context)
 
-    if is_price_question(text):
-        await update.message.reply_text(
-            'Стоимость консультации подскажет администратор — она зависит от клиники, '
-            'в которую Вас смогут записать.\n\n'
-            'Подскажите, пожалуйста, что именно Вас беспокоит?'
-        )
-        return COMPLAINT
+    reply = await llm_or_fallback_reply(update, context, text=text)
+    if reply:
+        if not lead.complaint and not is_price_question(text):
+            lead.complaint = summarize_complaint(text)
+        await update.message.reply_text(reply, reply_markup=ReplyKeyboardRemove())
+        if lead.phone:
+            return NAME if not lead.client_name else NAME
+        return PHONE if 'номер телефона' in reply.lower() else COMPLAINT
 
-    lead: ConversationData = context.user_data['lead']
     lead.complaint = summarize_complaint(text)
     await update.message.reply_text(
-        'Подскажите, пожалуйста, когда Вам удобнее: сегодня, завтра или в ближайшие дни? '
-        'Если есть предпочтение, можно сразу указать время: утро, день или вечер.',
+        'Подскажите, пожалуйста, есть ли пожелания по времени записи: будни или выходные, утро, день или вечер?',
         reply_markup=ReplyKeyboardRemove(),
     )
     return PREFERRED_TIME
@@ -69,27 +116,35 @@ async def start_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def complaint_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     assert update.message is not None
     text = update.message.text or ''
-    if is_price_question(text):
-        await update.message.reply_text(
-            'Стоимость консультации подскажет администратор — она зависит от клиники, '
-            'в которую Вас смогут записать.\n\n'
-            'Подскажите, пожалуйста, что именно Вас беспокоит?'
-        )
-        return COMPLAINT
+    lead = ensure_lead(context)
 
-    lead: ConversationData = context.user_data['lead']
+    reply = await llm_or_fallback_reply(update, context, text=text)
+    if reply:
+        if not lead.complaint and not is_price_question(text):
+            lead.complaint = summarize_complaint(text)
+        await update.message.reply_text(reply)
+        if lead.phone:
+            return NAME if not lead.client_name else NAME
+        return PHONE if 'номер телефона' in reply.lower() else COMPLAINT
+
     lead.complaint = summarize_complaint(text)
     await update.message.reply_text(
-        'Подскажите, пожалуйста, когда Вам удобнее: сегодня, завтра или в ближайшие дни? '
-        'Если есть предпочтение, можно сразу указать время: утро, день или вечер.'
+        'Подскажите, пожалуйста, есть ли пожелания по времени записи: будни или выходные, утро, день или вечер?'
     )
     return PREFERRED_TIME
 
 
 async def preferred_time_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     assert update.message is not None
-    lead: ConversationData = context.user_data['lead']
-    lead.preferred_time = summarize_complaint(update.message.text or '')
+    lead = ensure_lead(context)
+    text = update.message.text or ''
+
+    reply = await llm_or_fallback_reply(update, context, text=text)
+    if reply and is_price_question(text):
+        await update.message.reply_text(reply)
+        return PHONE
+
+    lead.preferred_time = summarize_complaint(text)
     await update.message.reply_text(
         'Напишите, пожалуйста, номер телефона для связи или нажмите «Поделиться контактом».',
         reply_markup=CONTACT_KEYBOARD,
@@ -99,7 +154,7 @@ async def preferred_time_step(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def phone_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     assert update.message is not None
-    lead: ConversationData = context.user_data['lead']
+    lead = ensure_lead(context)
 
     phone = None
     if update.message.contact and update.message.contact.phone_number:
@@ -123,7 +178,7 @@ async def name_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     settings: Settings = context.application.bot_data['settings']
     repo: LeadRepository = context.application.bot_data['repo']
     sheets: SheetsExporter | None = context.application.bot_data.get('sheets')
-    lead: ConversationData = context.user_data['lead']
+    lead = ensure_lead(context)
 
     lead.client_name = summarize_complaint(update.message.text or '')
     username = update.effective_user.username if update.effective_user else None
@@ -191,11 +246,19 @@ def build_app(settings: Settings) -> Application:
             raise ValueError('Google Sheets enabled, but GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SHEET_ID missing')
         sheets = SheetsExporter(settings.google_service_account_json, settings.google_sheet_id, settings.timezone)
 
+    llm = None
+    if settings.llm_enabled:
+        if not settings.llm_base_url or not settings.llm_api_key or not settings.llm_model:
+            raise ValueError('LLM enabled, but LLM_BASE_URL or LLM_API_KEY or LLM_MODEL missing')
+        llm = FreeLLM(base_url=settings.llm_base_url, api_key=settings.llm_api_key, model=settings.llm_model)
+
     app = Application.builder().token(settings.bot_token).build()
     app.bot_data['settings'] = settings
     app.bot_data['repo'] = repo
     if sheets:
         app.bot_data['sheets'] = sheets
+    if llm:
+        app.bot_data['llm'] = llm
 
     conversation = ConversationHandler(
         entry_points=[
