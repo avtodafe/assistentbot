@@ -32,13 +32,38 @@ CONTACT_KEYBOARD: Final = ReplyKeyboardMarkup(
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['lead'] = ConversationData()
-    await update.message.reply_text(
+    if update.message:
+        await update.message.reply_text(
         'Здравствуйте! Я ассистент Ирины. Помогу уточнить пару вопросов и передам администратору, '
         'чтобы Вас записали на консультацию. Я не врач и не ставлю диагнозы в переписке.\n\n'
         'Подскажите, пожалуйста, что именно Вас беспокоит?',
         reply_markup=ReplyKeyboardRemove(),
-    )
+        )
     return COMPLAINT
+
+
+async def start_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Позволяет начать сценарий без /start: первая текстовая реплика считается жалобой."""
+    assert update.message is not None
+    text = (update.message.text or '').strip()
+    context.user_data['lead'] = ConversationData()
+
+    if is_price_question(text):
+        await update.message.reply_text(
+            'Стоимость консультации подскажет администратор — она зависит от клиники, '
+            'в которую Вас смогут записать.\n\n'
+            'Подскажите, пожалуйста, что именно Вас беспокоит?'
+        )
+        return COMPLAINT
+
+    lead: ConversationData = context.user_data['lead']
+    lead.complaint = summarize_complaint(text)
+    await update.message.reply_text(
+        'Подскажите, пожалуйста, когда Вам удобнее: сегодня, завтра или в ближайшие дни? '
+        'Если есть предпочтение, можно сразу указать время: утро, день или вечер.',
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    return PREFERRED_TIME
 
 
 async def complaint_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -144,6 +169,14 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message:
+        await update.message.reply_text(
+            'Я помогаю передать заявку на консультацию Ирине. Можно просто написать, что Вас беспокоит, '
+            'или начать заново командой /start. Для отмены — /cancel.'
+        )
+
+
 def build_app(settings: Settings) -> Application:
     db_path = settings.db_path
     if not db_path.is_absolute():
@@ -165,7 +198,10 @@ def build_app(settings: Settings) -> Application:
         app.bot_data['sheets'] = sheets
 
     conversation = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
+        entry_points=[
+            CommandHandler('start', start),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, start_from_text),
+        ],
         states={
             COMPLAINT: [MessageHandler(filters.TEXT & ~filters.COMMAND, complaint_step)],
             PREFERRED_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, preferred_time_step)],
@@ -178,6 +214,7 @@ def build_app(settings: Settings) -> Application:
         fallbacks=[CommandHandler('cancel', cancel)],
         allow_reentry=True,
     )
+    app.add_handler(CommandHandler('help', help_command))
     app.add_handler(conversation)
     return app
 

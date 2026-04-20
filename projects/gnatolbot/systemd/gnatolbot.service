@@ -1,0 +1,16 @@
+[Unit]
+Description=Gnatol Telegram Lead Bot
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/gnatolbot
+EnvironmentFile=/opt/gnatolbot/.env
+ExecStart=/opt/gnatolbot/.venv/bin/python -m gnatolbot
+Restart=always
+RestartSec=5
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target
