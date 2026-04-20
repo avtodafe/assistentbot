@@ -1,0 +1,5 @@
+python-telegram-bot==21.11.1
+python-dotenv==1.0.1
+SQLAlchemy==2.0.40
+gspread==6.1.4
+google-auth==2.38.0
