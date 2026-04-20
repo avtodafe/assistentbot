@@ -18,9 +18,11 @@ Current answer policy for the patient-facing bot:
 - If phone is missing, ask for phone.
 - If name is missing and phone is already present, ask for name.
 - If the message is vague, gently steer back to consultation booking.
+- If the message is outside the clinic-assistant domain, do not answer it on the merits; refuse briefly and return to consultation booking.
 
 Suggested quality checks:
 - Price question -> must say 2000 RUB.
 - Availability question -> must not promise tomorrow / exact slot.
 - Symptom description -> no diagnosis.
 - Free-form text -> should still steer toward lead capture.
+- Out-of-scope request like math/code/news -> should not be sent through as a normal assistant answer; must refuse and return to booking context.

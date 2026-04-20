@@ -15,7 +15,14 @@ from telegram.ext import (
 )
 
 from .config import Settings
-from .dialogue import ConversationData, is_price_question, normalize_phone, summarize_complaint
+from .dialogue import (
+    ConversationData,
+    has_time_reference,
+    is_consultation_related,
+    is_price_question,
+    normalize_phone,
+    summarize_complaint,
+)
 from .llm import GigaChatLLM, OpenRouterLLM
 from .models import Database
 from .storage import LeadPayload, LeadRepository, SheetsExporter
@@ -25,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 COMPLAINT, PREFERRED_TIME, PHONE, NAME = range(4)
 CONSULTATION_PRICE_TEXT = 'Консультация стоит 2000 рублей.'
+OUT_OF_SCOPE_REPLY = (
+    'Я помогаю только по вопросам консультации у Ирины и передаче заявки администратору клиники. '
+    'Если хотите записаться, напишите, пожалуйста, что Вас беспокоит, или оставьте номер телефона для связи.'
+)
 CONTACT_KEYBOARD: Final = ReplyKeyboardMarkup(
     [[{'text': 'Поделиться контактом', 'request_contact': True}]],
     resize_keyboard=True,
@@ -41,8 +52,11 @@ def ensure_lead(context: ContextTypes.DEFAULT_TYPE) -> ConversationData:
 
 
 async def llm_or_fallback_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, *, text: str) -> str | None:
-    llm: FreeLLM | None = context.application.bot_data.get('llm')
+    llm = context.application.bot_data.get('llm')
     lead = ensure_lead(context)
+
+    if not is_consultation_related(text, lead):
+        return OUT_OF_SCOPE_REPLY
 
     if llm:
         try:
@@ -73,6 +87,11 @@ async def llm_or_fallback_reply(update: Update, context: ContextTypes.DEFAULT_TY
             f'{CONSULTATION_PRICE_TEXT}\n\n'
             'Если хотите, я могу передать Вашу заявку администратору клиники. '
             'Напишите, пожалуйста, номер телефона для связи.'
+        )
+    if has_time_reference(text):
+        return (
+            'Точные варианты записи подскажет администратор клиники после связи с Вами.\n\n'
+            'Напишите, пожалуйста, номер телефона для связи, и я передам заявку.'
         )
     return None
 
@@ -105,6 +124,10 @@ async def start_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return NAME if not lead.client_name else NAME
         return PHONE if 'номер телефона' in reply.lower() else COMPLAINT
 
+    if not is_consultation_related(text, lead):
+        await update.message.reply_text(OUT_OF_SCOPE_REPLY, reply_markup=ReplyKeyboardRemove())
+        return COMPLAINT
+
     lead.complaint = summarize_complaint(text)
     await update.message.reply_text(
         'Подскажите, пожалуйста, есть ли пожелания по времени записи: будни или выходные, утро, день или вечер?',
@@ -127,6 +150,10 @@ async def complaint_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return NAME if not lead.client_name else NAME
         return PHONE if 'номер телефона' in reply.lower() else COMPLAINT
 
+    if not is_consultation_related(text, lead):
+        await update.message.reply_text(OUT_OF_SCOPE_REPLY)
+        return COMPLAINT
+
     lead.complaint = summarize_complaint(text)
     await update.message.reply_text(
         'Подскажите, пожалуйста, есть ли пожелания по времени записи: будни или выходные, утро, день или вечер?'
@@ -143,6 +170,10 @@ async def preferred_time_step(update: Update, context: ContextTypes.DEFAULT_TYPE
     if reply and is_price_question(text):
         await update.message.reply_text(reply)
         return PHONE
+
+    if not is_consultation_related(text, lead):
+        await update.message.reply_text(OUT_OF_SCOPE_REPLY)
+        return PREFERRED_TIME
 
     lead.preferred_time = summarize_complaint(text)
     await update.message.reply_text(
