@@ -24,14 +24,17 @@ LLM_MODEL=qwen/qwen3-next-80b-a3b-instruct:free
 4. `Есть снимок, но не понимаю что делать`
 5. `Хочу консультацию, мой номер +7 900 000 00 00`
 
-## Chosen free model
-`qwen/qwen3-next-80b-a3b-instruct:free`
+## Current preferred model
+`GigaChat`
 
-Why this one:
-- free on OpenRouter
-- instruct-tuned and strong enough for short client-facing Russian replies
-- better fit for flexible intent handling than tiny free models
-- simpler and more predictable than using the generic `openrouter/free` router
+Why it is better for the current stage:
+- Russian-first model and provider
+- live auth + chat request already succeeded in testing
+- avoids OpenRouter free-pool rate-limit issues
+- better fit for short client-facing Russian replies
+
+## Alternative fallback
+`qwen/qwen3-next-80b-a3b-instruct:free` via OpenRouter can remain as a fallback option, but free OpenRouter models were rate-limited upstream during testing.
 
 ## Expected behavior
 - On price questions: should explicitly say 2000 RUB.

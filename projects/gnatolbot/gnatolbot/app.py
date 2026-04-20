@@ -16,7 +16,7 @@ from telegram.ext import (
 
 from .config import Settings
 from .dialogue import ConversationData, is_price_question, normalize_phone, summarize_complaint
-from .llm import FreeLLM
+from .llm import GigaChatLLM, OpenRouterLLM
 from .models import Database
 from .storage import LeadPayload, LeadRepository, SheetsExporter
 
@@ -248,9 +248,18 @@ def build_app(settings: Settings) -> Application:
 
     llm = None
     if settings.llm_enabled:
-        if not settings.llm_base_url or not settings.llm_api_key or not settings.llm_model:
-            raise ValueError('LLM enabled, but LLM_BASE_URL or LLM_API_KEY or LLM_MODEL missing')
-        llm = FreeLLM(base_url=settings.llm_base_url, api_key=settings.llm_api_key, model=settings.llm_model)
+        if settings.llm_provider == 'gigachat':
+            if not settings.llm_api_key or not settings.llm_model:
+                raise ValueError('GigaChat enabled, but LLM_API_KEY or LLM_MODEL missing')
+            llm = GigaChatLLM(
+                credentials=settings.llm_api_key,
+                model=settings.llm_model,
+                scope=settings.llm_scope or 'GIGACHAT_API_PERS',
+            )
+        else:
+            if not settings.llm_base_url or not settings.llm_api_key or not settings.llm_model:
+                raise ValueError('LLM enabled, but LLM_BASE_URL or LLM_API_KEY or LLM_MODEL missing')
+            llm = OpenRouterLLM(base_url=settings.llm_base_url, api_key=settings.llm_api_key, model=settings.llm_model)
 
     app = Application.builder().token(settings.bot_token).build()
     app.bot_data['settings'] = settings
