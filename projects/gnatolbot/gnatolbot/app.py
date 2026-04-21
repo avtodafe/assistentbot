@@ -180,9 +180,16 @@ async def preferred_time_step(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = update.message.text or ''
 
     reply = await llm_or_fallback_reply(update, context, text=text)
-    if reply and is_price_question(text):
+    if reply:
         await update.message.reply_text(reply)
-        return PHONE
+        if is_greeting(text) or is_small_talk(text):
+            context.user_data['lead'] = ConversationData()
+            return COMPLAINT
+        if is_price_question(text) or has_time_reference(text):
+            return PHONE
+        if lead.phone:
+            return NAME if not lead.client_name else NAME
+        return PHONE if 'номер телефона' in reply.lower() else PREFERRED_TIME
 
     if not is_consultation_related(text, lead):
         await update.message.reply_text(OUT_OF_SCOPE_REPLY)
@@ -213,23 +220,24 @@ async def phone_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return PHONE
 
     lead.phone = phone
+    if lead.client_name:
+        return await finish_lead(update, context)
     await update.message.reply_text('Как к Вам можно обращаться?', reply_markup=ReplyKeyboardRemove())
     return NAME
 
 
-async def name_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def finish_lead(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     assert update.message is not None
     settings: Settings = context.application.bot_data['settings']
     repo: LeadRepository = context.application.bot_data['repo']
     sheets: SheetsExporter | None = context.application.bot_data.get('sheets')
     lead = ensure_lead(context)
 
-    lead.client_name = summarize_complaint(update.message.text or '')
     username = update.effective_user.username if update.effective_user else None
     saved = repo.save(
         LeadPayload(
             username=f'@{username}' if username else None,
-            client_name=lead.client_name,
+            client_name=lead.client_name or '',
             phone=lead.phone or '',
             complaint=lead.complaint or '',
             preferred_time=lead.preferred_time or '',
@@ -247,18 +255,26 @@ async def name_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             'Лид от Ирины',
             '- Канал: TG',
             f"- Username: @{username}" if username else '- Username: —',
-            f"- Имя: {lead.client_name}",
+            f"- Имя: {lead.client_name or '—'}",
             f"- Телефон: {lead.phone}",
             f"- Запрос: {lead.complaint}",
-            f"- Удобное время: {lead.preferred_time}",
+            f"- Удобное время: {lead.preferred_time or '—'}",
         ]
     )
     await context.bot.send_message(chat_id=settings.clinic_chat_id, text=card)
     await update.message.reply_text(
-        'Спасибо! Передаю информацию администратору. Он обычно связывается в течение часа.'
+        'Спасибо. Я передала Вашу заявку администратору клиники. Для новой записи или нового вопроса можно написать сюда снова в любой момент.'
     )
     context.user_data.clear()
     return ConversationHandler.END
+
+
+async def name_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    assert update.message is not None
+    lead = ensure_lead(context)
+
+    lead.client_name = summarize_complaint(update.message.text or '')
+    return await finish_lead(update, context)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
