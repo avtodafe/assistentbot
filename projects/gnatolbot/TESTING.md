@@ -1,11 +1,13 @@
-# Testing free-model replies
+# Testing assistant flow
 
 ## What changed
-The bot can now optionally use a free external chat-completions model to generate more flexible replies while still enforcing hard business rules:
+The bot now follows a deterministic assistant flow instead of relying on free-form LLM-generated client replies:
 - consultation price = 2000 RUB
 - no promises about exact slots
 - no diagnosis
 - goal is to collect complaint + phone + name and hand off to clinic admin
+- after handoff, the flow closes cleanly
+- a later message starts a fresh flow
 
 ## Env
 Add to `.env`:
@@ -37,7 +39,9 @@ Why it is better for the current stage:
 `qwen/qwen3-next-80b-a3b-instruct:free` via OpenRouter can remain as a fallback option, but free OpenRouter models were rate-limited upstream during testing.
 
 ## Expected behavior
-- On price questions: should explicitly say 2000 RUB.
-- On slot questions: should say exact slots are provided by the clinic administrator after contact.
-- On symptom messages: should avoid diagnosis and move toward collecting contact.
-- On mixed/free-form inputs: should stay short and politely steer to lead capture.
+- On greeting: ask what exactly is bothering the client.
+- On price questions: explicitly say 2000 RUB.
+- On slot questions: say exact slots are provided by the clinic administrator after contact.
+- On symptom messages: avoid diagnosis and move toward collecting contact.
+- On handoff completion: confirm transfer to administrator and close the scenario.
+- On a later new message after completion: start a fresh scenario without stale state.

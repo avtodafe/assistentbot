@@ -14,14 +14,19 @@ from telegram.ext import (
     filters,
 )
 
+from .assistant_flow import (
+    GREETING_REPLY,
+    OUT_OF_SCOPE_REPLY,
+    classify_opening,
+    handle_complaint_step,
+    handle_time_step,
+    normalize_name,
+)
 from .config import Settings
 from .dialogue import (
     ConversationData,
-    has_time_reference,
     is_consultation_related,
     is_greeting,
-    is_price_question,
-    is_small_talk,
     normalize_phone,
     summarize_complaint,
 )
@@ -33,15 +38,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 COMPLAINT, PREFERRED_TIME, PHONE, NAME = range(4)
-CONSULTATION_PRICE_TEXT = 'Консультация стоит 2000 рублей.'
-OUT_OF_SCOPE_REPLY = (
-    'Я помогаю только по вопросам консультации у Ирины и передаче заявки администратору клиники. '
-    'Если хотите записаться, напишите, пожалуйста, что Вас беспокоит, или оставьте номер телефона для связи.'
-)
-GREETING_REPLY = (
-    'Здравствуйте. Я ассистент Ирины по записи на консультацию. '
-    'Подскажите, пожалуйста, что именно Вас беспокоит?'
-)
 CONTACT_KEYBOARD: Final = ReplyKeyboardMarkup(
     [[{'text': 'Поделиться контактом', 'request_contact': True}]],
     resize_keyboard=True,
@@ -58,50 +54,6 @@ def ensure_lead(context: ContextTypes.DEFAULT_TYPE) -> ConversationData:
 
 
 async def llm_or_fallback_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, *, text: str) -> str | None:
-    llm = context.application.bot_data.get('llm')
-    lead = ensure_lead(context)
-
-    if is_greeting(text) or is_small_talk(text):
-        return GREETING_REPLY
-
-    if not is_consultation_related(text, lead):
-        return OUT_OF_SCOPE_REPLY
-
-    if llm:
-        try:
-            result = await llm.respond(
-                user_text=text,
-                complaint=lead.complaint or '',
-                preferred_time=lead.preferred_time or '',
-                phone=lead.phone or '',
-                name=lead.client_name or '',
-            )
-            if result.complaint and not lead.complaint:
-                lead.complaint = result.complaint
-            if result.preferred_time and not lead.preferred_time:
-                lead.preferred_time = result.preferred_time
-            if result.name and not lead.client_name:
-                lead.client_name = result.name
-            if result.phone and not lead.phone:
-                normalized = normalize_phone(result.phone)
-                if normalized:
-                    lead.phone = normalized
-            if result.reply:
-                return result.reply
-        except Exception as exc:  # noqa: BLE001
-            logger.exception('LLM reply failed: %s', exc)
-
-    if is_price_question(text):
-        return (
-            f'{CONSULTATION_PRICE_TEXT}\n\n'
-            'Если хотите, я могу передать Вашу заявку администратору клиники. '
-            'Напишите, пожалуйста, номер телефона для связи.'
-        )
-    if has_time_reference(text):
-        return (
-            'Точные варианты записи подскажет администратор клиники после связи с Вами.\n\n'
-            'Напишите, пожалуйста, номер телефона для связи, и я передам заявку.'
-        )
     return None
 
 
@@ -124,27 +76,26 @@ async def start_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data['lead'] = ConversationData()
     lead = ensure_lead(context)
 
-    reply = await llm_or_fallback_reply(update, context, text=text)
-    if reply:
-        if not lead.complaint and not is_price_question(text) and not is_greeting(text) and not is_small_talk(text):
-            lead.complaint = summarize_complaint(text)
-        await update.message.reply_text(reply, reply_markup=ReplyKeyboardRemove())
-        if is_greeting(text) or is_small_talk(text):
-            return COMPLAINT
-        if lead.phone:
-            return NAME if not lead.client_name else NAME
-        return PHONE if 'номер телефона' in reply.lower() else COMPLAINT
-
-    if not is_consultation_related(text, lead):
+    if not is_consultation_related(text, lead) and not is_greeting(text):
         await update.message.reply_text(OUT_OF_SCOPE_REPLY, reply_markup=ReplyKeyboardRemove())
         return COMPLAINT
 
-    lead.complaint = summarize_complaint(text)
-    await update.message.reply_text(
-        'Подскажите, пожалуйста, есть ли пожелания по времени записи: будни или выходные, утро, день или вечер?',
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    return PREFERRED_TIME
+    decision = classify_opening(text)
+    if decision.reset_lead:
+        context.user_data['lead'] = ConversationData()
+        lead = ensure_lead(context)
+    if decision.store_complaint:
+        lead.complaint = summarize_complaint(text)
+    phone = normalize_phone(text)
+    if phone:
+        lead.phone = phone
+    await update.message.reply_text(decision.reply, reply_markup=ReplyKeyboardRemove())
+    return {
+        'complaint': COMPLAINT,
+        'preferred_time': PREFERRED_TIME,
+        'phone': PHONE,
+        'name': NAME,
+    }[decision.next_state]
 
 
 async def complaint_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -152,26 +103,23 @@ async def complaint_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.message.text or ''
     lead = ensure_lead(context)
 
-    reply = await llm_or_fallback_reply(update, context, text=text)
-    if reply:
-        if not lead.complaint and not is_price_question(text) and not is_greeting(text) and not is_small_talk(text):
-            lead.complaint = summarize_complaint(text)
-        await update.message.reply_text(reply)
-        if is_greeting(text) or is_small_talk(text):
-            return COMPLAINT
-        if lead.phone:
-            return NAME if not lead.client_name else NAME
-        return PHONE if 'номер телефона' in reply.lower() else COMPLAINT
-
-    if not is_consultation_related(text, lead):
+    if not is_consultation_related(text, lead) and not is_greeting(text):
         await update.message.reply_text(OUT_OF_SCOPE_REPLY)
         return COMPLAINT
 
-    lead.complaint = summarize_complaint(text)
-    await update.message.reply_text(
-        'Подскажите, пожалуйста, есть ли пожелания по времени записи: будни или выходные, утро, день или вечер?'
-    )
-    return PREFERRED_TIME
+    decision = handle_complaint_step(text)
+    if decision.reset_lead:
+        context.user_data['lead'] = ConversationData()
+        return await start(update, context)
+    if decision.store_complaint:
+        lead.complaint = summarize_complaint(text)
+    await update.message.reply_text(decision.reply)
+    return {
+        'complaint': COMPLAINT,
+        'preferred_time': PREFERRED_TIME,
+        'phone': PHONE,
+        'name': NAME,
+    }[decision.next_state]
 
 
 async def preferred_time_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -179,28 +127,26 @@ async def preferred_time_step(update: Update, context: ContextTypes.DEFAULT_TYPE
     lead = ensure_lead(context)
     text = update.message.text or ''
 
-    reply = await llm_or_fallback_reply(update, context, text=text)
-    if reply:
-        await update.message.reply_text(reply)
-        if is_greeting(text) or is_small_talk(text):
-            context.user_data['lead'] = ConversationData()
-            return COMPLAINT
-        if is_price_question(text) or has_time_reference(text):
-            return PHONE
-        if lead.phone:
-            return NAME if not lead.client_name else NAME
-        return PHONE if 'номер телефона' in reply.lower() else PREFERRED_TIME
-
-    if not is_consultation_related(text, lead):
+    if not is_consultation_related(text, lead) and not is_greeting(text):
         await update.message.reply_text(OUT_OF_SCOPE_REPLY)
         return PREFERRED_TIME
 
-    lead.preferred_time = summarize_complaint(text)
+    decision = handle_time_step(text)
+    if decision.reset_lead:
+        context.user_data['lead'] = ConversationData()
+        return await start(update, context)
+    if decision.store_time:
+        lead.preferred_time = summarize_complaint(text)
     await update.message.reply_text(
-        'Напишите, пожалуйста, номер телефона для связи или нажмите «Поделиться контактом».',
-        reply_markup=CONTACT_KEYBOARD,
+        decision.reply,
+        reply_markup=CONTACT_KEYBOARD if decision.ask_phone else ReplyKeyboardRemove(),
     )
-    return PHONE
+    return {
+        'complaint': COMPLAINT,
+        'preferred_time': PREFERRED_TIME,
+        'phone': PHONE,
+        'name': NAME,
+    }[decision.next_state]
 
 
 async def phone_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -273,7 +219,7 @@ async def name_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     assert update.message is not None
     lead = ensure_lead(context)
 
-    lead.client_name = summarize_complaint(update.message.text or '')
+    lead.client_name = normalize_name(update.message.text or '')
     return await finish_lead(update, context)
 
 
