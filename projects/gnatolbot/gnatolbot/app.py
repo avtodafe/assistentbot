@@ -19,7 +19,9 @@ from .dialogue import (
     ConversationData,
     has_time_reference,
     is_consultation_related,
+    is_greeting,
     is_price_question,
+    is_small_talk,
     normalize_phone,
     summarize_complaint,
 )
@@ -35,6 +37,10 @@ CONSULTATION_PRICE_TEXT = 'Консультация стоит 2000 рублей
 OUT_OF_SCOPE_REPLY = (
     'Я помогаю только по вопросам консультации у Ирины и передаче заявки администратору клиники. '
     'Если хотите записаться, напишите, пожалуйста, что Вас беспокоит, или оставьте номер телефона для связи.'
+)
+GREETING_REPLY = (
+    'Здравствуйте. Я ассистент Ирины по записи на консультацию. '
+    'Подскажите, пожалуйста, что именно Вас беспокоит?'
 )
 CONTACT_KEYBOARD: Final = ReplyKeyboardMarkup(
     [[{'text': 'Поделиться контактом', 'request_contact': True}]],
@@ -54,6 +60,9 @@ def ensure_lead(context: ContextTypes.DEFAULT_TYPE) -> ConversationData:
 async def llm_or_fallback_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, *, text: str) -> str | None:
     llm = context.application.bot_data.get('llm')
     lead = ensure_lead(context)
+
+    if is_greeting(text) or is_small_talk(text):
+        return GREETING_REPLY
 
     if not is_consultation_related(text, lead):
         return OUT_OF_SCOPE_REPLY
@@ -117,9 +126,11 @@ async def start_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     reply = await llm_or_fallback_reply(update, context, text=text)
     if reply:
-        if not lead.complaint and not is_price_question(text):
+        if not lead.complaint and not is_price_question(text) and not is_greeting(text) and not is_small_talk(text):
             lead.complaint = summarize_complaint(text)
         await update.message.reply_text(reply, reply_markup=ReplyKeyboardRemove())
+        if is_greeting(text) or is_small_talk(text):
+            return COMPLAINT
         if lead.phone:
             return NAME if not lead.client_name else NAME
         return PHONE if 'номер телефона' in reply.lower() else COMPLAINT
@@ -143,9 +154,11 @@ async def complaint_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     reply = await llm_or_fallback_reply(update, context, text=text)
     if reply:
-        if not lead.complaint and not is_price_question(text):
+        if not lead.complaint and not is_price_question(text) and not is_greeting(text) and not is_small_talk(text):
             lead.complaint = summarize_complaint(text)
         await update.message.reply_text(reply)
+        if is_greeting(text) or is_small_talk(text):
+            return COMPLAINT
         if lead.phone:
             return NAME if not lead.client_name else NAME
         return PHONE if 'номер телефона' in reply.lower() else COMPLAINT

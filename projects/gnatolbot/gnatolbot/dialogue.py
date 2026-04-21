@@ -6,6 +6,8 @@ import re
 PRICE_HINT_RE = re.compile(r'(сколько.*стои|цена|стоимость)', re.IGNORECASE)
 PHONE_RE = re.compile(r'\+?\d[\d\s\-()]{8,}\d')
 TIME_HINT_RE = re.compile(r'(сегодня|завтра|в ближайшие дни|утр|дн[её]м|вечер|будни|выходн|когда удобно|окно|мест|запис)', re.IGNORECASE)
+GREETING_RE = re.compile(r'^(привет|здравствуйте|здравствуй|добрый день|доброе утро|добрый вечер|день добрый)\W*$', re.IGNORECASE)
+SMALL_TALK_RE = re.compile(r'^(ок|хорошо|понятно|ясно|ага|угу|алло|ау|есть кто|помогите)\W*$', re.IGNORECASE)
 CONSULTATION_HINT_RE = re.compile(
     r'('
     r'запис|консультац|при[её]м|администратор|окно|время|стоим|цена|'
@@ -53,6 +55,16 @@ def is_price_question(text: str) -> bool:
 
 def has_time_reference(text: str) -> bool:
     return bool(TIME_HINT_RE.search(text))
+
+
+def is_greeting(text: str) -> bool:
+    clean = ' '.join((text or '').split())
+    return bool(GREETING_RE.match(clean))
+
+
+def is_small_talk(text: str) -> bool:
+    clean = ' '.join((text or '').split())
+    return bool(SMALL_TALK_RE.match(clean))
 
 
 def is_consultation_related(text: str, lead: ConversationData | None = None) -> bool:
